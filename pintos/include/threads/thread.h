@@ -91,12 +91,12 @@ struct thread {
 	enum thread_status status;          /* Thread state. */
 	char name[16];                      /* Name (for debugging purposes). */
 	int priority;                       /* Priority. */
-
+	int64_t wake_tick;
 	/* Shared between thread.c and synch.c. */
 	struct list_elem elem;              /* List element. */
 
-#ifdef USERPRObG
-	/* Owned y userprog/process.c. */
+#ifdef USERPROG
+	/* Owned by userprog/process.c. */
 	uint64_t *pml4;                     /* Page map level 4 */
 #endif
 #ifdef VM
@@ -104,7 +104,6 @@ struct thread {
 	struct supplemental_page_table spt;
 #endif
 
-	int64_t wakeup_tick;               /* 깨워야 할 틱 */
 	/* Owned by thread.c. */
 	struct intr_frame tf;               /* Information for switching */
 	unsigned magic;                     /* Detects stack overflow. */
