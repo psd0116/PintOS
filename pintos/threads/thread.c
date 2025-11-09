@@ -65,7 +65,7 @@ static void do_schedule(int status);
 static void schedule (void);
 static tid_t allocate_tid (void);
 
-static bool thread_priority_cmp (const struct list_elem *a, const struct list_elem *b, void *aux UNUSED);
+bool thread_priority_cmp (const struct list_elem *a, const struct list_elem *b, void *aux UNUSED);
 wakeup_tick_cmp(const struct list_elem *a, const struct list_elem *b, void *aux UNUSED);
 
 /* Returns true if T appears to point to a valid thread. */
@@ -259,6 +259,16 @@ thread_unblock (struct thread *t) {
 	list_insert_ordered (&ready_list, &t->elem, thread_priority_cmp, NULL);
 
 	t->status = THREAD_READY;
+
+	// timeout 오류가 걸렸다.
+	// 인터럽터 컨텍스트가 아니고
+	// ready_list가 비어있으면,
+	// ready_list의 맨 앞 스레드가
+	// 현재 실행 중인 스레드보다 우선 순위가 높다면
+	// thread_yeild()를 호출하여 CPU 양보
+	if (!intr_context () && t->priority > thread_current ()->priority) {
+        thread_yield ();
+    }
 	intr_set_level (old_level);
 }
 
@@ -272,7 +282,7 @@ wakeup_tick_cmp(const struct list_elem *a, const struct list_elem *b, void *aux 
     return ta->wake_tick < tb->wake_tick;
 }
 
-static bool
+bool
 thread_priority_cmp (const struct list_elem *a,
                      const struct list_elem *b,
                      void *aux UNUSED) {
@@ -393,9 +403,20 @@ thread_yield (void) {
 }
 
 /* Sets the current thread's priority to NEW_PRIORITY. */
+// 스레드의 새로운 우선 순위
 void
 thread_set_priority (int new_priority) {
 	thread_current ()->priority = new_priority;
+
+	if (!list_empty(&ready_list))
+	{
+		struct thread *highest_ready = list_entry(list_front(&ready_list), struct thread, elem);
+
+		if (thread_current() -> priority < highest_ready -> priority)
+		{
+			thread_yield();
+		}
+	}
 }
 
 /* Returns the current thread's priority. */
