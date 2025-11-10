@@ -66,7 +66,7 @@ static void schedule (void);
 static tid_t allocate_tid (void);
 
 bool thread_priority_cmp (const struct list_elem *a, const struct list_elem *b, void *aux UNUSED);
-wakeup_tick_cmp(const struct list_elem *a, const struct list_elem *b, void *aux UNUSED);
+bool wakeup_tick_cmp(const struct list_elem *a, const struct list_elem *b, void *aux UNUSED);
 
 /* Returns true if T appears to point to a valid thread. */
 #define is_thread(t) ((t) != NULL && (t)->magic == THREAD_MAGIC)
@@ -221,7 +221,6 @@ thread_create (const char *name, int priority,
 	{
 		thread_yield();
 	}
-	
 	return tid;
 }
 
@@ -276,7 +275,7 @@ thread_unblock (struct thread *t) {
  * @brief 두 스레드의 wake_tick을 비교하여 정렬 기준을 제공합니다.
  * @details list_insert_ordered에서 사용되며, a가 b보다 먼저 깨야 하면 True 반환
  */
-wakeup_tick_cmp(const struct list_elem *a, const struct list_elem *b, void *aux UNUSED) {
+bool wakeup_tick_cmp(const struct list_elem *a, const struct list_elem *b, void *aux UNUSED) {
     struct thread *ta = list_entry(a, struct thread, elem);
     struct thread *tb = list_entry(b, struct thread, elem);
     return ta->wake_tick < tb->wake_tick;
@@ -310,7 +309,7 @@ void thread_sleep(int64_t wake_tick) {
 
     old_level = intr_disable();       // 인터럽트 비활성화 
 
-	ASSERT (!thread_current != idle_thread);
+	ASSERT (cur != idle_thread);
 
 	cur->wake_tick = wake_tick; 
 	//void list_insert_ordered (struct list *, struct list_elem *,list_less_func *, void *aux);
@@ -408,17 +407,28 @@ thread_yield (void) {
 // 스레드의 새로운 우선 순위
 void
 thread_set_priority (int new_priority) {
-	thread_current ()->priority = new_priority;
+    struct thread *t = thread_current();
 
-	if (!list_empty(&ready_list))
-	{
-		struct thread *highest_ready = list_entry(list_front(&ready_list), struct thread, elem);
+    /* === [수정됨] priority-change 테스트 통과용 === */
+    // (경고: 이 로직은 priority-donate-lower/multiple에서 다시 수정해야 함)
 
-		if (thread_current() -> priority < highest_ready -> priority)
-		{
-			thread_yield();
-		}
-	}
+    // base_priority를 변경
+    t->base_priority = new_priority;
+
+    // 현재 priority도 new_priority로 설정
+    // (기부 로직이 없으므로, priority-change의 '낮아지는' 경우를 처리)
+    t->priority = new_priority;
+
+    // 우선순위가 낮아졌을 수 있으므로 yield 체크
+    if (!list_empty(&ready_list))
+    {
+        struct thread *highest_ready = list_entry(list_front(&ready_list), struct thread, elem);
+
+        if (t -> priority < highest_ready -> priority)
+        {
+            thread_yield();
+        }
+    }
 }
 
 /* Returns the current thread's priority. */
@@ -506,16 +516,19 @@ kernel_thread (thread_func *function, void *aux) {
    NAME. */
 static void
 init_thread (struct thread *t, const char *name, int priority) {
-	ASSERT (t != NULL);
-	ASSERT (PRI_MIN <= priority && priority <= PRI_MAX);
-	ASSERT (name != NULL);
+    ASSERT (t != NULL);
+    ASSERT (PRI_MIN <= priority && priority <= PRI_MAX);
+    ASSERT (name != NULL);
 
-	memset (t, 0, sizeof *t);
-	t->status = THREAD_BLOCKED;
-	strlcpy (t->name, name, sizeof t->name);
-	t->tf.rsp = (uint64_t) t + PGSIZE - sizeof (void *);
-	t->priority = priority;
-	t->magic = THREAD_MAGIC;
+    memset (t, 0, sizeof *t);
+    t->status = THREAD_BLOCKED;
+    strlcpy (t->name, name, sizeof t->name);
+    t->tf.rsp = (uint64_t) t + PGSIZE - sizeof (void *);
+    t->priority = priority;
+
+    t->base_priority = priority; // priority와 동일하게 초기화
+
+    t->magic = THREAD_MAGIC;
 }
 
 /* Chooses and returns the next thread to be scheduled.  Should
