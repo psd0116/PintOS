@@ -310,11 +310,13 @@ void thread_sleep(int64_t wake_tick) {
 
     old_level = intr_disable();       // 인터럽트 비활성화 
 
-    cur->wake_tick = wake_tick; 
+	ASSERT (!thread_current != idle_thread);
+
+	cur->wake_tick = wake_tick; 
 	//void list_insert_ordered (struct list *, struct list_elem *,list_less_func *, void *aux);
 	list_insert_ordered(&sleep_list,&cur->elem,wakeup_tick_cmp, NULL ); //정렬 삽입 
 
-    thread_block();                   // actual blocking
+	thread_block();                   // actual blocking
 
     intr_set_level(old_level);        // 인터럽트 복구
 }
@@ -397,7 +399,7 @@ thread_yield (void) {
     old_level = intr_disable ();
     if (curr != idle_thread)
         // list_push_back (&ready_list, &curr->elem); /* <-- 기존 코드 */
-        list_insert_ordered (&ready_list, &curr->elem, thread_priority_cmp, NULL); /* <-- 수정된 코드 */
+        list_insert_ordered (&ready_list, &curr->elem, thread_priority_cmp, NULL); // <-- 수정된 코드 
     do_schedule (THREAD_READY);
     intr_set_level (old_level);
 }
