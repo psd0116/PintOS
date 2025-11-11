@@ -708,3 +708,22 @@ allocate_tid (void) {
 
 	return tid;
 }
+
+void
+thread_check_yield_on_priority_drop(void) {
+    /* ready_list가 비어있으면 비교할 대상이 없으므로 반환 */
+    if (list_empty(&ready_list))
+        return;
+
+    struct thread *cur = thread_current();
+
+    /* ready_list의 맨 앞(최고 우선순위 스레드)을 확인 */
+    struct thread *highest_ready = list_entry(list_front(&ready_list), struct thread, elem);
+
+    /* * 내 우선순위가 ready_list의 최고 우선순위 스레드보다 낮다면
+     * CPU를 양보(yield)합니다.
+     */
+    if (cur->priority < highest_ready->priority) {
+        thread_yield();
+    }
+}
