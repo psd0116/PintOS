@@ -67,6 +67,7 @@ static tid_t allocate_tid (void);
 
 bool thread_priority_cmp (const struct list_elem *a, const struct list_elem *b, void *aux UNUSED);
 bool wakeup_tick_cmp(const struct list_elem *a, const struct list_elem *b, void *aux UNUSED);
+bool thread_compare_donate_priority (const struct list_elem *l, const struct list_elem *s, void *aux UNUSED);
 
 /* Returns true if T appears to point to a valid thread. */
 #define is_thread(t) ((t) != NULL && (t)->magic == THREAD_MAGIC)
@@ -409,15 +410,10 @@ void
 thread_set_priority (int new_priority) {
     struct thread *t = thread_current();
 
-    /* === [수정됨] priority-change 테스트 통과용 === */
-    // (경고: 이 로직은 priority-donate-lower/multiple에서 다시 수정해야 함)
-
     // base_priority를 변경
     t->base_priority = new_priority;
 
-    // 현재 priority도 new_priority로 설정
-    // (기부 로직이 없으므로, priority-change의 '낮아지는' 경우를 처리)
-    t->priority = new_priority;
+	refresh_priority(t);
 
     // 우선순위가 낮아졌을 수 있으므로 yield 체크
     if (!list_empty(&ready_list))
@@ -525,9 +521,9 @@ init_thread (struct thread *t, const char *name, int priority) {
     strlcpy (t->name, name, sizeof t->name);
     t->tf.rsp = (uint64_t) t + PGSIZE - sizeof (void *);
     t->priority = priority;
-
+	t->waiting_on_lock = NULL;
     t->base_priority = priority; // priority와 동일하게 초기화
-
+	list_init (&t->donation);
     t->magic = THREAD_MAGIC;
 }
 
@@ -726,4 +722,74 @@ thread_check_yield_on_priority_drop(void) {
     if (cur->priority < highest_ready->priority) {
         thread_yield();
     }
+}
+
+// thread_compare_prioirty역할을 donation_elem에 대하여 하는 함수
+bool thread_compare_donate_priority (const struct list_elem *l, const struct list_elem *s, void *aux UNUSED)
+{
+	return list_entry(l, struct thread, donation_elem)->priority > list_entry(s, struct thread, donation_elem)->priority;
+}
+
+// 우선 순위 기부 함수
+void donate_priority(void)
+{
+	int depth;
+	struct thread *t = thread_current();
+
+	for (depth = 0; depth < 8; depth++)
+	{
+		// NULL 이 아니면 스레드가 lock이 걸려있다는 소리.
+		// lock을 점유하고 있는 holder 스레드에게 priority를 넘겨주는 방식을 깊이 8까지
+		if (t->waiting_on_lock == NULL)
+		{
+			break;
+		} else {
+			struct thread *holder = t->waiting_on_lock->holder;
+			holder->priority = t->priority;
+			t = holder;
+		}
+	}
+}
+
+// 낮은 우선 순위의 스레드가 lock release를 할 때 Lock B를 필요로하는
+// 스레드는 donation 리스트에서 삭제해야 한다.
+// 더 이상 donation 리스트에 남아 있는 스레드가 없다면 원래 값인 
+// base_priority로 설정
+void remove_donation_list_lock (struct lock *lock)
+{
+	struct list_elem *e;
+	struct thread *t = thread_current();
+
+	// 처음부터 끝까지 돌면서 리스트에 있는 스레드가 priority를 빌려준 이유, 즉 wait_on_lock에
+	// 이번에 release하는 lock이라면 해당하는 스레드를 dona리스트에서 삭제
+	if (!list_empty(&t->donation))
+	{
+		for (e = list_begin(&t->donation); e != list_end(&t->donation); e = list_next (e))
+			{
+				struct thread *x = list_entry (e, struct thread, donation_elem);
+				if (x->waiting_on_lock == lock)
+				{
+					list_remove (&x->donation_elem);
+				}
+			}
+	}
+}
+
+// doantion 리스트가 비어있다면 init_priority로 설정되고 donation 리스트에
+// 스레드가 남아있다면, 남아있는 스레드 중에서 가장 높은 스레드를 가져와야 한다.
+// list_sort를 사용하여 우선순위 내림차순 정렬 후 맨앞 스레드우선순위와
+// base_priority와 비교하여 더 큰 priority를 적용
+void refresh_priority (struct thread *t)
+{
+	t->priority = t->base_priority;
+	
+	if (!list_empty(&t->donation))
+	{
+		list_sort (&t->donation, thread_compare_donate_priority, 0);
+		struct thread *front = list_entry (list_front (&t->donation), struct thread, donation_elem);
+		if (front->priority > t->priority)
+		{
+			t->priority = front->priority;
+		}
+	}
 }

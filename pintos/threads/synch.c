@@ -119,6 +119,8 @@
    
       ASSERT (sema != NULL);
    
+      list_sort(&sema->waiters,thread_priority_cmp,0);
+      
       if (!list_empty (&sema->waiters)) {
            // list_pop_front()로 가장 우선순위가 높은 스레드를 깨움
            struct thread *t = list_entry (list_pop_front (&sema->waiters), struct thread, elem);
@@ -203,14 +205,13 @@
    
       struct thread *t = thread_current();
    
-      // 락의 홀더가 있고, 내 우선순위가 더 높으면 기부
-      if (lock->holder != NULL && lock->holder->priority < t->priority)
-      {
-         lock->holder->priority = t->priority;
-      }
+      // 락의 홀더가 있고, 내 우선 순위가 더 높으면 기부
+      if (lock->holder) {
+            t->waiting_on_lock = lock;
+            list_insert_ordered(&lock->holder->donation, &t->donation_elem, thread_compare_donate_priority, 0);
    
-      // 내가 어떤 락을 기다리는지
-      t->waiting_on_lock = lock;
+            donate_priority();
+      }
    
       // lock을 기다리면서 잠든다.
       sema_down(&lock->semaphore);
@@ -252,17 +253,19 @@
       ASSERT (lock != NULL);
       ASSERT (lock_held_by_current_thread (lock));
    
+      remove_donation_list_lock(lock);
+      refresh_priority(thread_current());
+      
       struct thread *t = thread_current();
       
       lock->holder = NULL;
    
-      t->priority = t->base_priority;
       sema_up (&lock->semaphore);
       /* * 락을 해제하고 우선순위가 낮아졌을 수 있으므로,
        * ready_list에서 가장 우선순위가 높은 스레드와 자신을 비교하여
        * 더 높은 스레드가 있다면 CPU를 양보합니다.
        */
-      void thread_check_yield_on_priority_drop(void);
+      thread_check_yield_on_priority_drop();
    }
    
    /* Returns true if the current thread holds LOCK, false
