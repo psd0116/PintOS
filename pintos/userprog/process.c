@@ -160,6 +160,7 @@ error:
 
 /* Switch the current execution context to the f_name.
  * Returns -1 on fail. */
+// 현재 실행 컨텍스트를 f_name으로 전환
 int
 process_exec (void *f_name) {
 	char *file_name = f_name;
@@ -168,23 +169,29 @@ process_exec (void *f_name) {
 	/* We cannot use the intr_frame in the thread structure.
 	 * This is because when current thread rescheduled,
 	 * it stores the execution information to the member. */
+	// 스레드 구조체에 있는 intr_frame을 사용할 수 없다.
+	// 전환할 때 사용하는 스레드의 
 	struct intr_frame _if;
 	_if.ds = _if.es = _if.ss = SEL_UDSEG;
 	_if.cs = SEL_UCSEG;
 	_if.eflags = FLAG_IF | FLAG_MBS;
 
 	/* We first kill the current context */
+	// 먼저 현재 컨텍스트를 종료
 	process_cleanup ();
 
 	/* And then load the binary */
+	// 바이너리를 로드
 	success = load (file_name, &_if);
 
 	/* If load failed, quit. */
+	// 로드에 실패하면 종료
 	palloc_free_page (file_name);
 	if (!success)
 		return -1;
 
 	/* Start switched process. */
+	// 전환된 프로세스를 시작
 	do_iret (&_if);
 	NOT_REACHED ();
 }
@@ -231,7 +238,7 @@ process_cleanup (void) {
 	uint64_t *pml4;
 	/* Destroy the current process's page directory and switch back
 	 * to the kernel-only page directory. */
-	pml4 = curr->pml4;
+	pml4 = curr->pml4;111111111111
 	if (pml4 != NULL) {
 		/* Correct ordering here is crucial.  We must set
 		 * cur->pagedir to NULL before switching page directories,
@@ -417,10 +424,59 @@ load (const char *file_name, struct intr_frame *if_) {
 	/* TODO: Your code goes here.
 	 * TODO: Implement argument passing (see project2/argument_passing.html). */ // argument 구현하기 1빠따로 해야할 일
 
+	char *argv[128];
+	int argc = 0;
+	char *token, *bookmark;
+
+	// 복사본 사용 -> 포인터라 real filename이 변경된다.
+	char *file_name_copy = palloc_get_page(0);
+
+	if (file_name_copy == NULL)
+	{
+		goto done;
+	}
+	
+	strlcpy(file_name_copy, file_name, PGSIZE); // 최대 페이지 사이즈만큼 짤라서 복사
+	
+	// strtok_r -> 더 이상 분리할 단어가 없을때 NULL을 반환
+	for (token = __strtok_r(file_name_copy, " ", &bookmark);
+		token != NULL;
+		token = __strtok_r(NULL, " ", &bookmark))
+	{
+		argv[argc] = token;
+		argc += 1;
+	}
+	argv[argc] == NULL;
+
+	palloc_free_page(file_name_copy);
+
+	char* rsp = (char*) USER_STACK;
+	char* stack_addr[argc];
+	
+	for (int i = argc -1; i >= 0; i--)
+	{
+		len = strlen(argv[i]) + 1;
+		rsp = rsp - len;
+		memcpy(rsp, argv[i], len); // void*를 사용해도 되나?
+		stack_addr[i] = rsp;
+	}
+
+	int padding = (uintptr_t) rsp % 8;
+	rsp = rsp - padding;
+	memset(rsp, 0, padding); // NULL 
+
+	// rsi rdi
+	// if_ 구조체에 넣어주기
+	// rsp 
+
 	success = true;
 
 done:
 	/* We arrive here whether the load is successful or not. */
+	if (file_name_copy != NULL)
+	{
+		palloc_free_page(file_name_copy);
+	}
 	file_close (file);
 	return success;
 }
