@@ -50,8 +50,14 @@ process_create_initd (const char *file_name) {
 		return TID_ERROR;
 	strlcpy (fn_copy, file_name, PGSIZE);
 
+	char thread_name[16];
+	strlcpy(thread_name, file_name, sizeof(thread_name));
+
+	char* save_ptr;
+	strtok_r(thread_name, " ", &save_ptr);
+
 	/* Create a new thread to execute FILE_NAME. */
-	tid = thread_create (file_name, PRI_DEFAULT, initd, fn_copy);
+	tid = thread_create (thread_name, PRI_DEFAULT, initd, fn_copy);
 	if (tid == TID_ERROR)
 		palloc_free_page (fn_copy);
 	return tid;
@@ -224,7 +230,7 @@ process_exit (void) {
 	 * TODO: We recommend you to implement process resource cleanup here. */
 
 	process_cleanup ();
-}
+} 
 
 /* Free the current process's resources. */
 static void
@@ -238,7 +244,7 @@ process_cleanup (void) {
 	uint64_t *pml4;
 	/* Destroy the current process's page directory and switch back
 	 * to the kernel-only page directory. */
-	pml4 = curr->pml4;111111111111
+	pml4 = curr->pml4;
 	if (pml4 != NULL) {
 		/* Correct ordering here is crucial.  We must set
 		 * cur->pagedir to NULL before switching page directories,
@@ -320,13 +326,13 @@ struct ELF64_PHDR {
 static bool setup_stack (struct intr_frame *if_);
 static bool validate_segment (const struct Phdr *, struct file *);
 static bool load_segment (struct file *file, off_t ofs, uint8_t *upage,
-		uint32_t read_bytes, uint32_t zero_bytes,
-		bool writable);
-
-/* Loads an ELF executable from FILE_NAME into the current thread.
- * Stores the executable's entry point into *RIP
- * and its initial stack pointer into *RSP.
- * Returns true if successful, false otherwise. */
+	uint32_t read_bytes, uint32_t zero_bytes,
+	bool writable);
+	
+	/* Loads an ELF executable from FILE_NAME into the current thread.
+	* Stores the executable's entry point into *RIP
+	* and its initial stack pointer into *RSP.
+	* Returns true if successful, false otherwise. */
 static bool
 load (const char *file_name, struct intr_frame *if_) {
 	struct thread *t = thread_current ();
@@ -335,7 +341,16 @@ load (const char *file_name, struct intr_frame *if_) {
 	off_t file_ofs;
 	bool success = false;
 	int i;
-
+	
+	char *argv[128];
+	int argc = 0;
+	char *token, *bookmark;
+	char* rsp = (char *)if_->rsp;
+	char* stack_addr[64];
+	
+	int len;
+	// char *argv_addr// argv 배열의 시작 주소
+	int padding;
 	/* Allocate and activate page directory. */
 	t->pml4 = pml4_create ();
 	if (t->pml4 == NULL)
@@ -424,10 +439,6 @@ load (const char *file_name, struct intr_frame *if_) {
 	/* TODO: Your code goes here.
 	 * TODO: Implement argument passing (see project2/argument_passing.html). */ // argument 구현하기 1빠따로 해야할 일
 
-	char *argv[128];
-	int argc = 0;
-	char *token, *bookmark;
-
 	// 복사본 사용 -> 포인터라 real filename이 변경된다.
 	char *file_name_copy = palloc_get_page(0);
 
@@ -439,20 +450,18 @@ load (const char *file_name, struct intr_frame *if_) {
 	strlcpy(file_name_copy, file_name, PGSIZE); // 최대 페이지 사이즈만큼 짤라서 복사
 	
 	// strtok_r -> 더 이상 분리할 단어가 없을때 NULL을 반환
-	for (token = __strtok_r(file_name_copy, " ", &bookmark);
+	for (token = strtok_r(file_name_copy, " ", &bookmark);
 		token != NULL;
-		token = __strtok_r(NULL, " ", &bookmark))
+		token = strtok_r(NULL, " ", &bookmark))
 	{
 		argv[argc] = token;
 		argc += 1;
 	}
-	argv[argc] == NULL;
+	// argv[argc] == NULL;
 
 	palloc_free_page(file_name_copy);
 
-	char* rsp = (char*) USER_STACK;
-	char* stack_addr[argc];
-	
+
 	for (int i = argc -1; i >= 0; i--)
 	{
 		len = strlen(argv[i]) + 1;
@@ -461,13 +470,36 @@ load (const char *file_name, struct intr_frame *if_) {
 		stack_addr[i] = rsp;
 	}
 
-	int padding = (uintptr_t) rsp % 8;
+	padding = (uintptr_t) rsp % 8;
 	rsp = rsp - padding;
 	memset(rsp, 0, padding); // NULL 
 
 	// rsi rdi
 	// if_ 구조체에 넣어주기
 	// rsp 
+
+	// argv[argc] = NULL;을 
+	rsp -= sizeof(char *);
+	*(char**)rsp = NULL;
+	
+	// argv 주소값 배열 저장
+	for (int j = argc - 1; j >= 0; j--){
+		rsp -= sizeof(char*);
+		*(char **)rsp = stack_addr[j];
+	}
+	
+	// 이 시점에서 rsp는 사용자 스택에 있는 argv 배열의 시작 주소를 가리킵니다.
+	// 이 값이 rsi 레지스터에 저장되어야 합니다.
+	uint64_t argv_address_on_stack = (uint64_t)rsp;
+
+	// 가짜 반환 주소 저장
+	rsp -= sizeof(void*);
+	*(void**)rsp = NULL;
+
+	// 새 사용자 프로세스를 위해 인터럽트 프레임을 업데이트합니다.
+	if_->rsp = (uint64_t)rsp;				// 최종 스택 포인터 설정
+	if_->R.rdi = argc;						// 첫 번째 인자: argc
+	if_->R.rsi = argv_address_on_stack;		// 두 번째 인자: argv
 
 	success = true;
 
