@@ -18,6 +18,7 @@
 #include "threads/mmu.h"
 #include "threads/vaddr.h"
 #include "intrinsic.h"
+#include "devices/timer.h"
 #ifdef VM
 #include "vm/vm.h"
 #endif
@@ -26,6 +27,8 @@ static void process_cleanup (void);
 static bool load (const char *file_name, struct intr_frame *if_);
 static void initd (void *f_name);
 static void __do_fork (void *);
+// static struct semaphore sema;
+
 
 /* General process initializer for initd and other process. */
 static void
@@ -51,7 +54,7 @@ process_create_initd (const char *file_name) {
 	strlcpy (fn_copy, file_name, PGSIZE);
 
 	char thread_name[16];
-	strlcpy(thread_name, file_name, sizeof(thread_name));
+	strlcpy(thread_name, file_name, PGSIZE);
 
 	char* save_ptr;
 	strtok_r(thread_name, " ", &save_ptr);
@@ -62,7 +65,7 @@ process_create_initd (const char *file_name) {
 		palloc_free_page (fn_copy);
 	return tid;
 }
-
+ 
 /* A thread function that launches first user process. */
 static void
 initd (void *f_name) {
@@ -71,6 +74,7 @@ initd (void *f_name) {
 #endif
 
 	process_init ();
+	printf("%s\n", f_name);
 
 	if (process_exec (f_name) < 0)
 		PANIC("Fail to launch initd\n");
@@ -217,6 +221,7 @@ process_wait (tid_t child_tid UNUSED) { // 구현 해야함 while을 통한 busy
 	/* XXX: Hint) The pintos exit if process_wait (initd), we recommend you
 	 * XXX:       to add infinite loop here before
 	 * XXX:       implementing the process_wait. */
+	thread_sleep(300);
 	return -1;
 }
 
@@ -342,11 +347,12 @@ load (const char *file_name, struct intr_frame *if_) {
 	bool success = false;
 	int i;
 	
+	char *file_name_copy = NULL;
 	char *argv[128];
 	int argc = 0;
 	char *token, *bookmark;
 	char* rsp = (char *)if_->rsp;
-	char* stack_addr[64];
+	char* stack_addr[128];
 	
 	int len;
 	// char *argv_addr// argv 배열의 시작 주소
@@ -357,12 +363,21 @@ load (const char *file_name, struct intr_frame *if_) {
 		goto done;
 	process_activate (thread_current ());
 
-	/* Open executable file. */
-	file = filesys_open (file_name);
-	if (file == NULL) {
-		printf ("load: %s: open failed\n", file_name);
-		goto done;
-	}
+	char *exec_name_copy = palloc_get_page(0);
+    if (exec_name_copy == NULL)
+        goto done;
+    strlcpy(exec_name_copy, file_name, PGSIZE);
+
+    char *exec_name;
+    char *save_ptr;
+    exec_name = strtok_r(exec_name_copy, " ", &save_ptr);
+
+	// /* Open executable file. */
+	// file = filesys_open (file_name);
+	// if (file == NULL) {
+	// 	printf ("load: %s: open failed\n", file_name);
+	// 	goto done;
+	// }
 
 	/* Read and verify executable header. */
 	if (file_read (file, &ehdr, sizeof ehdr) != sizeof ehdr
@@ -440,7 +455,7 @@ load (const char *file_name, struct intr_frame *if_) {
 	 * TODO: Implement argument passing (see project2/argument_passing.html). */ // argument 구현하기 1빠따로 해야할 일
 
 	// 복사본 사용 -> 포인터라 real filename이 변경된다.
-	char *file_name_copy = palloc_get_page(0);
+	file_name_copy = palloc_get_page(0);
 
 	if (file_name_copy == NULL)
 	{
@@ -457,49 +472,42 @@ load (const char *file_name, struct intr_frame *if_) {
 		argv[argc] = token;
 		argc += 1;
 	}
-	// argv[argc] == NULL;
-
-	palloc_free_page(file_name_copy);
-
 
 	for (int i = argc -1; i >= 0; i--)
 	{
 		len = strlen(argv[i]) + 1;
-		rsp = rsp - len;
-		memcpy(rsp, argv[i], len); // void*를 사용해도 되나?
-		stack_addr[i] = rsp;
+		if_->rsp -= len;
+		memcpy((void*)if_->rsp, argv[i], len); // void*를 사용해도 되나?
+		stack_addr[i] = (char*) if_->rsp;
 	}
 
-	padding = (uintptr_t) rsp % 8;
-	rsp = rsp - padding;
-	memset(rsp, 0, padding); // NULL 
+	int padding1 = (uintptr_t)if_->rsp % 8;
+	if (padding1 != 0){
+		if_->rsp -= padding1;
+		memset((void*)if_->rsp, 0, padding1); // NULL 
+	}
 
 	// rsi rdi
 	// if_ 구조체에 넣어주기
 	// rsp 
 
 	// argv[argc] = NULL;을 
-	rsp -= sizeof(char *);
-	*(char**)rsp = NULL;
+	if_->rsp -= sizeof(char *);
+	*((char**)if_->rsp) = NULL;
 	
 	// argv 주소값 배열 저장
 	for (int j = argc - 1; j >= 0; j--){
-		rsp -= sizeof(char*);
-		*(char **)rsp = stack_addr[j];
+		if_->rsp -= sizeof(char*);
+		*((char **)if_->rsp) = stack_addr[j];
 	}
 	
-	// 이 시점에서 rsp는 사용자 스택에 있는 argv 배열의 시작 주소를 가리킵니다.
-	// 이 값이 rsi 레지스터에 저장되어야 합니다.
-	uint64_t argv_address_on_stack = (uint64_t)rsp;
-
 	// 가짜 반환 주소 저장
-	rsp -= sizeof(void*);
-	*(void**)rsp = NULL;
+	if_->rsp -= sizeof(void*);
+	*((void**)if_->rsp) = NULL;
 
-	// 새 사용자 프로세스를 위해 인터럽트 프레임을 업데이트합니다.
-	if_->rsp = (uint64_t)rsp;				// 최종 스택 포인터 설정
-	if_->R.rdi = argc;						// 첫 번째 인자: argc
-	if_->R.rsi = argv_address_on_stack;		// 두 번째 인자: argv
+	// 새 사용자 프로세스를 위해 인터럽트 프레임을 업데이트
+	if_->R.rdi = argc;	// 첫 번째 인자: argc
+	if_->R.rsi = (uint64_t)if_->rsp + sizeof(void*); // argv[0]의 주소
 
 	success = true;
 
