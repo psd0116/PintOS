@@ -53,9 +53,8 @@ process_create_initd (const char *file_name) {
 		return TID_ERROR;
 	strlcpy (fn_copy, file_name, PGSIZE);
 
-	char thread_name[16];
+	char thread_name[64];
 	strlcpy(thread_name, file_name, PGSIZE);
-
 	char* save_ptr;
 	strtok_r(thread_name, " ", &save_ptr);
 
@@ -74,7 +73,6 @@ initd (void *f_name) {
 #endif
 
 	process_init ();
-	printf("%s\n", f_name);
 
 	if (process_exec (f_name) < 0)
 		PANIC("Fail to launch initd\n");
@@ -233,7 +231,7 @@ process_exit (void) {
 	 * TODO: Implement process termination message (see
 	 * TODO: project2/process_termination.html).
 	 * TODO: We recommend you to implement process resource cleanup here. */
-
+	printf ("%s: exit(%d)\n", thread_name(), curr->status);
 	process_cleanup ();
 } 
 
@@ -348,11 +346,11 @@ load (const char *file_name, struct intr_frame *if_) {
 	int i;
 	
 	char *file_name_copy = NULL;
-	char *argv[128];
+	char *argv[64];
 	int argc = 0;
 	char *token, *bookmark;
 	char* rsp = (char *)if_->rsp;
-	char* stack_addr[128];
+	char* stack_addr[64];
 	
 	int len;
 	// char *argv_addr// argv 배열의 시작 주소
@@ -360,24 +358,34 @@ load (const char *file_name, struct intr_frame *if_) {
 	/* Allocate and activate page directory. */
 	t->pml4 = pml4_create ();
 	if (t->pml4 == NULL)
-		goto done;
+	goto done;
 	process_activate (thread_current ());
+	
+	file_name_copy = palloc_get_page(0);
 
-	char *exec_name_copy = palloc_get_page(0);
-    if (exec_name_copy == NULL)
-        goto done;
-    strlcpy(exec_name_copy, file_name, PGSIZE);
+	if (file_name_copy == NULL)
+	{
+		goto done;
+	}
+	
+	strlcpy(file_name_copy, file_name, PGSIZE); // 최대 페이지 사이즈만큼 짤라서 복사
+	
+	// strtok_r -> 더 이상 분리할 단어가 없을때 NULL을 반환
+	for (token = strtok_r(file_name_copy, " ", &bookmark);
+		token != NULL;
+		token = strtok_r(NULL, " ", &bookmark))
+	{
+		argv[argc++] = token;
+	}
 
-    char *exec_name;
-    char *save_ptr;
-    exec_name = strtok_r(exec_name_copy, " ", &save_ptr);
+	file_name = argv[0];
 
-	// /* Open executable file. */
-	// file = filesys_open (file_name);
-	// if (file == NULL) {
-	// 	printf ("load: %s: open failed\n", file_name);
-	// 	goto done;
-	// }
+	/* Open executable file. */
+	file = filesys_open (file_name);
+	if (file == NULL) {
+		printf ("load: %s: open failed\n", file_name);
+		goto done;
+	}
 
 	/* Read and verify executable header. */
 	if (file_read (file, &ehdr, sizeof ehdr) != sizeof ehdr
@@ -455,24 +463,6 @@ load (const char *file_name, struct intr_frame *if_) {
 	 * TODO: Implement argument passing (see project2/argument_passing.html). */ // argument 구현하기 1빠따로 해야할 일
 
 	// 복사본 사용 -> 포인터라 real filename이 변경된다.
-	file_name_copy = palloc_get_page(0);
-
-	if (file_name_copy == NULL)
-	{
-		goto done;
-	}
-	
-	strlcpy(file_name_copy, file_name, PGSIZE); // 최대 페이지 사이즈만큼 짤라서 복사
-	
-	// strtok_r -> 더 이상 분리할 단어가 없을때 NULL을 반환
-	for (token = strtok_r(file_name_copy, " ", &bookmark);
-		token != NULL;
-		token = strtok_r(NULL, " ", &bookmark))
-	{
-		argv[argc] = token;
-		argc += 1;
-	}
-
 	for (int i = argc -1; i >= 0; i--)
 	{
 		len = strlen(argv[i]) + 1;
