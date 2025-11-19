@@ -231,18 +231,29 @@ process_exit (void) {
 	 * TODO: Implement process termination message (see
 	 * TODO: project2/process_termination.html).
 	 * TODO: We recommend you to implement process resource cleanup here. */
-	printf ("%s: exit(%d)\n", thread_name(), curr->status);
+	
+	// 강제종료될 경우 정상적으로 닫히지 않은 잔존 파일들 닫아주기
+	if (curr->fdt_table != NULL){
+		for (int i = 2; i < 128; i++){
+			if (curr->fdt_table[i] != NULL){
+				file_close(curr->fdt_table[i]);
+				curr->fdt_table[i] = NULL;
+			}
+		}
+		palloc_free_page(curr->fdt_table);
+		curr->fdt_table = NULL;
+	}
 	process_cleanup ();
-} 
+}
 
 /* Free the current process's resources. */
 static void
 process_cleanup (void) {
 	struct thread *curr = thread_current ();
-
-#ifdef VM
+	
+	#ifdef VM
 	supplemental_page_table_kill (&curr->spt);
-#endif
+	#endif
 
 	uint64_t *pml4;
 	/* Destroy the current process's page directory and switch back
@@ -361,6 +372,12 @@ load (const char *file_name, struct intr_frame *if_) {
 	goto done;
 	process_activate (thread_current ());
 	
+	t->fdt_table = palloc_get_page(PAL_ZERO);
+
+    if (t->fdt_table == NULL){
+        goto done;
+	}
+
 	file_name_copy = palloc_get_page(0);
 
 	if (file_name_copy == NULL)
