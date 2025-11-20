@@ -50,9 +50,16 @@ void
 syscall_handler (struct intr_frame *f UNUSED) {
 	// TODO: Your implementation goes here.
 	int syscall_num = f->R.rax;
-	// f->R.rdi = 첫 번째 인자 -> uint값(fd)
-	// f->R.rsi = 두 번째 인자 -> 문자열의 주소값(주소)
-	// f->R.rdx = 세 번째 인자 -> 사이즈(size)
+	// f->R.rax : 시스템 콜 번호 (반환 값은 처리가 끝난 후 여기에 저장됨)
+    
+    // f->R.rdi : 1번째 인자 (Argument 1)
+    //   자료형: int (fd, status) 또는 char* (file name) 등 상황에 따라 다름
+    
+    // f->R.rsi : 2번째 인자 (Argument 2)
+    //   자료형: void* (buffer), unsigned (size) 등
+    
+    // f->R.rdx : 3번째 인자 (Argument 3)
+    //   자료형: unsigned (size, count) 등
 
 	switch (syscall_num)
 	{
@@ -63,12 +70,14 @@ syscall_handler (struct intr_frame *f UNUSED) {
 		// 	hander_exec();
 		// 	break;
 		case SYS_EXIT:
-			handler_exit(f->R.rdi);
+			handler_exit((int)f->R.rdi);
 			break;
-		// case SYS_FORK:
-		// 	break;
-		// case SYS_WAIT:
-		// 	break;
+		case SYS_FORK:
+			f->R.rax = handler_fork((const char *)f->R.rdi, f);
+			break;
+		case SYS_WAIT:
+			f->R.rax = process_wait((tid_t)f->R.rdi);
+			break;
 		case SYS_CREATE:
 			f->R.rax = handler_create((const char*)f->R.rdi, (unsigned)f->R.rsi);
 			break;
@@ -122,7 +131,7 @@ int give_fdt(struct file *file) {
     struct thread *cur = thread_current();
     struct file **fdt1 = cur->fdt_table;
 
-    for (int fd = 2; fd < 512; fd++) {
+    for (int fd = 2; fd < 128; fd++) {
         // 현재 검사하는 슬롯(fdt[fd])이 비어있는지(NULL) 확인
         if (fdt1[fd] == NULL) {
             fdt1[fd] = file;
@@ -163,7 +172,7 @@ int handler_write(int fd, const void *buffer, unsigned size){
         struct thread *cur = thread_current();
         struct file **fdt = cur->fdt_table;
 
-        if (fd < 2 || fd >= 512 || fdt[fd] == NULL) {
+        if (fd < 2 || fd >= 128 || fdt[fd] == NULL) {
             return -1;
         }
 
@@ -212,7 +221,7 @@ void handler_close(int fd){
     struct thread *cur = thread_current();
     struct file **fdt = cur->fdt_table;
 
-    if(fd < 2 || fd >= 512 || fdt[fd] == NULL){
+    if(fd < 2 || fd >= 128 || fdt[fd] == NULL){
         return;
     }
 
@@ -239,7 +248,7 @@ int handler_read(int fd, void* buffer, unsigned size){
 		for (unsigned i = 0; i < size; i++)
 		{
 			char key = input_getc();
-			*ptr++ = key;
+			*(ptr+i) = key;
 			bytes_read++;
 			if (key == '\0') break;
 		}
@@ -253,7 +262,7 @@ int handler_read(int fd, void* buffer, unsigned size){
 	struct thread *cur = thread_current();
 	struct file **fdt = cur->fdt_table;
 
-    if (fd < 2 || fd >= 512 || fdt[fd] == NULL) {
+    if (fd < 2 || fd >= 128 || fdt[fd] == NULL) {
         return -1;
     }
 
@@ -270,7 +279,7 @@ int handler_filesize(int fd){
 	struct thread *cur = thread_current();
 	struct file **fdt = cur->fdt_table;
 
-	if (fd < 2 || fd >= 512 || fdt[fd] == NULL){
+	if (fd < 2 || fd >= 128 || fdt[fd] == NULL){
 		return -1;
 	}
 
@@ -281,6 +290,21 @@ int handler_filesize(int fd){
 	lock_release(&filesys_lock);
 
 	return size;
+}
+
+tid_t handler_fork(const char *thread_name, struct intr_frame *f){
+	check_address(thread_name);
+	struct thread *cur = thread_current();
+
+	// 부모의 레지스터값인 f는 현재 스택에 있는 임시 변수이므로
+	// 스레드 구조체 parent_if에 복사를 해둔다.
+	memcpy(&cur->parent_if, f, sizeof(struct intr_frame));
+
+	// 부모의 값을 사용해서 fork를 해보자~
+	tid_t tid = process_fork(thread_name, f);
+
+	// sema를 통해 기다렸다가 자식의 tid를 반환한다.
+	return tid;
 }
 // halt랑 exit
 // enum {

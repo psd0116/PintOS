@@ -5,6 +5,7 @@
 #include <list.h>
 #include <stdint.h>
 #include "threads/interrupt.h"
+#include "threads/synch.h"
 #ifdef VM
 #include "vm/vm.h"
 #endif
@@ -95,6 +96,14 @@ struct thread {
 	/* Shared between thread.c and synch.c. */
 	struct list_elem elem;              /* List element. */
 
+	// 부모 context를 임시 보관할 공간
+	struct intr_frame parent_if;
+	// 자식 프로세스 생성 대기를 위한 세마포어
+	struct semaphore fork_sema;
+	// 자식 프로세스의 종료를 위한 세마포어
+	struct semaphore wait_sema;
+	// 자식 프로세스의 상태를 전부 읽을 때까지 기다리는 세마포어
+	struct semaphore free_sema;
 	// 파일 디스크립터 테이블
 	struct file **fdt_table;
 	// 자식 프로세스의 상태 정수형으로 표현
@@ -107,6 +116,10 @@ struct thread {
 	struct list donation;
 	// 위 리스트를 관리하기 위한 element로 thread 구조체의 elem과 구분하여 사용
 	struct list_elem donation_elem;
+	// 자식 관리를 위한 리스트
+	struct list child_list;
+	// 부모 자식리스트에 매달릴 연결 고리
+	struct list_elem child_elem;
 #ifdef USERPROG
 	/* Owned by userprog/process.c. */
 	uint64_t *pml4;                     /* Page map level 4 */

@@ -201,6 +201,10 @@ thread_create (const char *name, int priority,
 	init_thread (t, name, priority);
 	tid = t->tid = allocate_tid ();
 
+	// 현재 실행 중인 부모의 자식 리스트에 방금 만든 스레드를 추가한다!
+	struct thread *parent = thread_current();
+	list_push_back(&parent->child_list, &t->child_elem);
+
 	/* Call the kernel_thread if it scheduled.
 	 * Note) rdi is 1st argument, and rsi is 2nd argument. */
 	t->tf.rip = (uintptr_t) kernel_thread;
@@ -523,6 +527,12 @@ init_thread (struct thread *t, const char *name, int priority) {
     t->priority = priority;
 	t->waiting_on_lock = NULL;
     t->base_priority = priority; // priority와 동일하게 초기화
+	sema_init(&t->fork_sema, 0); // 0으로 초기화 해야 down 하자마자 잠든다.
+	sema_init(&t->wait_sema, 0);
+	sema_init(&t->free_sema, 0);
+	list_init(&t->child_list);
+	t->fdt_table = NULL;
+	t->exit_status = 0;
 	list_init (&t->donation);
     t->magic = THREAD_MAGIC;
 }
