@@ -104,6 +104,8 @@ struct thread {
 	struct semaphore wait_sema;
 	// 자식 프로세스의 상태를 전부 읽을 때까지 기다리는 세마포어
 	struct semaphore free_sema;
+	// 현재 실행 중인 파일
+	struct file *running_file;
 	// 파일 디스크립터 테이블
 	struct file **fdt_table;
 	// 자식 프로세스의 상태 정수형으로 표현

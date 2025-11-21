@@ -7,8 +7,10 @@
 #include "userprog/gdt.h"
 #include "threads/flags.h"
 #include "intrinsic.h"
+#include "threads/palloc.h"
 #include "threads/synch.h"
 #include "filesys/filesys.h"
+#include "userprog/process.h"
 
 void syscall_entry (void);
 void syscall_handler (struct intr_frame *);
@@ -66,9 +68,9 @@ syscall_handler (struct intr_frame *f UNUSED) {
 		case SYS_HALT:
 			handler_halt();
 			break;
-		// case SYS_EXEC:
-		// 	hander_exec();
-		// 	break;
+		case SYS_EXEC:
+			f->R.rax = handler_exec((const char *)f->R.rdi);
+			break;
 		case SYS_EXIT:
 			handler_exit((int)f->R.rdi);
 			break;
@@ -151,7 +153,6 @@ void handler_halt(void){
 void handler_exit(int status){
 	struct thread *cur = thread_current();
 	cur->exit_status = status; // 자식 프로세스의 종료상태 저장
-	printf ("%s: exit(%d)\n", cur->name, cur->exit_status);
 	thread_exit();
 }
 
@@ -200,9 +201,15 @@ bool handler_create(const char *file, unsigned initial_size) {
 int handler_open(const char* file){
 	check_string(file);
 
+	char* fn_copy = palloc_get_page(PAL_ZERO);
+
+	strlcpy(fn_copy, file, PGSIZE);
+
 	lock_acquire(&filesys_lock);
-	struct file *cur_file = filesys_open(file);
+	struct file *cur_file = filesys_open(fn_copy);
 	lock_release(&filesys_lock);
+
+	palloc_free_page(fn_copy);
 
 	if(cur_file == NULL){
 		return -1;
@@ -213,7 +220,6 @@ int handler_open(const char* file){
 	if (fd == -1){
 		file_close(cur_file);
 	}
-
 	return fd;
 }
 
@@ -233,11 +239,9 @@ void handler_close(int fd){
 }
 
 int handler_read(int fd, void* buffer, unsigned size){
-	
 	if(size == 0) return 0;
 	check_address(buffer);
 	check_address((char*)buffer + size -1);
-
 	char* ptr = (char*) buffer;
 	int bytes_read = 0;
 
@@ -294,17 +298,28 @@ int handler_filesize(int fd){
 
 tid_t handler_fork(const char *thread_name, struct intr_frame *f){
 	check_address(thread_name);
-	struct thread *cur = thread_current();
-
-	// 부모의 레지스터값인 f는 현재 스택에 있는 임시 변수이므로
-	// 스레드 구조체 parent_if에 복사를 해둔다.
-	memcpy(&cur->parent_if, f, sizeof(struct intr_frame));
-
 	// 부모의 값을 사용해서 fork를 해보자~
 	tid_t tid = process_fork(thread_name, f);
-
 	// sema를 통해 기다렸다가 자식의 tid를 반환한다.
 	return tid;
+}
+
+int handler_exec (const char *cmd_line) {
+	check_address(cmd_line);
+	if (cmd_line == NULL) handler_exit(-1);
+
+    struct thread *cur = thread_current();
+    char* fn_copy = palloc_get_page(PAL_ZERO);
+    if (fn_copy == NULL) return -1;
+	
+	strlcpy(fn_copy, cmd_line, PGSIZE);
+	
+    if (process_exec(fn_copy) == -1) {
+        return -1;
+    }
+    
+    // 성공 시 리턴 없음
+    return -1;
 }
 // halt랑 exit
 // enum {

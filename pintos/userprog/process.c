@@ -34,6 +34,11 @@ static void __do_fork (void *);
 static void
 process_init (void) {
 	struct thread *current = thread_current ();
+
+    if (current->fdt_table == NULL) {
+        current->fdt_table = palloc_get_page(PAL_ZERO);
+        if (current->fdt_table == NULL) return;
+    }
 }
 
 /* Starts the first userland program, called "initd", loaded from FILE_NAME.
@@ -80,7 +85,7 @@ initd (void *f_name) {
 }
 
 // tid를 받아 해당하는 자식 스레드 구조체를 반환하는 함수
-struct thread *get_child_process(tid_t tid){
+struct thread *get_child_thread(tid_t tid){
 	struct thread *cur = thread_current();
 	struct list_elem *e;
 
@@ -101,13 +106,12 @@ process_fork (const char *name, struct intr_frame *if_ UNUSED) {
 	struct thread *cur = thread_current();
 	// 부모의 현재 유저 문맥을 스레드 구조체에 빽업해놓기
 	memcpy(&cur->parent_if, if_, sizeof(struct intr_frame));
-	
 	// 자식 스레드 생성하기
 	tid_t tid = thread_create (name, PRI_DEFAULT, __do_fork, cur);
 	if (tid == TID_ERROR) return TID_ERROR;
 
-	// 자식 리스트를 만들어 부모가 스레드 구조체를 찾아서 생성 완료 대기하기
-	struct thread *child = get_child_process(tid);
+	// 자식 리스트를 만들어 부모가 스레드 구조체를 찾아서 생성  완료 대기하기
+	struct thread *child = get_child_thread(tid);
 
 	// 자식이 do_fork를 할 때까지 멈춘다.
 	sema_down(&child->fork_sema);
@@ -135,7 +139,7 @@ duplicate_pte (uint64_t *pte, void *va, void *aux) {
 	/* 2. Resolve VA from the parent's page map level 4. */
 	// 부모의 pml4를 이용해 맞는 물리 메모리를 찾는다.
 	parent_page = pml4_get_page (parent->pml4, va);
-	if (parent_page == NULL) return true;
+	if (parent_page == NULL) return false;
 	/* 3. TODO: Allocate new PAL_USER page for the child and set result to
 	 *    TODO: NEWPAGE. */
 	// 자식 프로세스 페이지를 할당받기
@@ -210,13 +214,17 @@ __do_fork (void *aux) {
 	// 자식 프로세스의 반환값 설정(0반환)
 	// 부모에게 완료 신호 보내기
 	// 자식도 페이지 테이블 할당
+	process_init ();
+	
 	current->fdt_table = palloc_get_page(PAL_ZERO);
 	if (current->fdt_table == NULL){
 		goto error;
 	}
-
 	// 부모꺼 fdt 복사 ㄱㄱ
-	for (int i = 0; i < 128; i++){
+	current->fdt_table[0] = parent->fdt_table[0];
+	current->fdt_table[1] = parent->fdt_table[1];
+	
+	for (int i = 2; i < 128; i++){
 		struct file *parent_file = parent->fdt_table[i];
 		
 		if(parent_file != NULL){
@@ -228,12 +236,9 @@ __do_fork (void *aux) {
 			current->fdt_table[i] = NULL;
 		}
 	}
-	
 	// 성공했으면 엄마한테 신호보내기
 	sema_up(&current->fork_sema);
-
-	process_init ();
-
+	
 	// 사용자 모드로 전환
 	if (succ)
 		do_iret (&if_);
@@ -263,8 +268,8 @@ process_exec (void *f_name) {
 	_if.eflags = FLAG_IF | FLAG_MBS;
 
 	/* We first kill the current context */
-	// 먼저 현재 컨텍스트를 종료
-	process_cleanup ();
+	// 먼저 현재 컨텍스트를 종료 -> pml4 파괴술
+	process_cleanup();
 
 	/* And then load the binary */
 	// 바이너리를 로드
@@ -272,9 +277,10 @@ process_exec (void *f_name) {
 
 	/* If load failed, quit. */
 	// 로드에 실패하면 종료
-	palloc_free_page (file_name);
-	if (!success)
-		return -1;
+	if (!success){
+		thread_current()->exit_status = -1;
+		thread_exit();
+	}
 
 	/* Start switched process. */
 	// 전환된 프로세스를 시작
@@ -293,15 +299,15 @@ process_exec (void *f_name) {
  * This function will be implemented in problem 2-2.  For now, it
  * does nothing. */
 int
-process_wait (tid_t child_tid UNUSED) { // 구현 해야함 while을 통한 busy-wait로 먼저 해보고 생각해보기
+process_wait (tid_t child_tid UNUSED) { 
+	// 구현 해야함 while을 통한 busy-wait로 먼저 해보고 생각해보기
 	/* XXX: Hint) The pintos exit if process_wait (initd), we recommend you
 	 * XXX:       to add infinite loop here before
 	 * XXX:       implementing the process_wait. */
 	// 자식 찾아서 가져와
-	struct thread *child = get_child_process(child_tid);
-
-	if (child == NULL) return -1;
 	
+	struct thread *child = get_child_thread(child_tid);
+	if (child == NULL) return -1;
 	// 자식이 종료될 때까지 대기
 	sema_down(&child->wait_sema);
 	// 자식 종료상태 가져오기
@@ -322,7 +328,9 @@ process_exit (void) {
 	 * TODO: Implement process termination message (see
 	 * TODO: project2/process_termination.html).
 	 * TODO: We recommend you to implement process resource cleanup here. */
-	
+	if (curr->pml4 != NULL){
+		printf ("%s: exit(%d)\n", curr->name, curr->exit_status);
+	}
 	// 강제종료될 경우 정상적으로 닫히지 않은 잔존 파일들 닫아주기
 	if (curr->fdt_table != NULL){
 		for (int i = 2; i < 128; i++){
@@ -334,9 +342,20 @@ process_exit (void) {
 		palloc_free_page(curr->fdt_table);
 		curr->fdt_table = NULL;
 	}
-
+	
 	process_cleanup ();
+
+	// 부모에게 종료 상태 전달
 	sema_up(&curr->wait_sema);
+	
+	struct list_elem *e;
+
+	while (!list_empty(&curr->child_list)) {
+    struct list_elem *e = list_pop_front(&curr->child_list);
+    struct thread *child = list_entry(e, struct thread, child_elem);
+    sema_up(&child->free_sema);
+	}
+	
 	sema_down(&curr->free_sema);
 }
 
@@ -465,12 +484,6 @@ load (const char *file_name, struct intr_frame *if_) {
 	if (t->pml4 == NULL)
 	goto done;
 	process_activate (thread_current ());
-	
-	t->fdt_table = palloc_get_page(PAL_ZERO);
-
-    if (t->fdt_table == NULL){
-        goto done;
-	}
 
 	file_name_copy = palloc_get_page(0);
 
@@ -497,6 +510,9 @@ load (const char *file_name, struct intr_frame *if_) {
 		printf ("load: %s: open failed\n", file_name);
 		goto done;
 	}
+
+	t->running_file = file;
+	file_deny_write(file);
 
 	/* Read and verify executable header. */
 	if (file_read (file, &ehdr, sizeof ehdr) != sizeof ehdr
@@ -610,6 +626,27 @@ load (const char *file_name, struct intr_frame *if_) {
 	if_->R.rdi = argc;	// 첫 번째 인자: argc
 	if_->R.rsi = (uint64_t)if_->rsp + sizeof(void*); // argv[0]의 주소
 
+	/*
+	높은 주소 (USER_STACK = 0x47480000)
+	+---------------------------+
+	| argv[0] 문자열            | "child-read\0"
+	| (stack_addr[0])           |
+	+---------------------------+
+	| argv[1] 문자열            | "3\0"
+	| (stack_addr[1])           |
+	+---------------------------+
+	| padding (0~7 bytes)       | 8바이트 정렬
+	+---------------------------+
+	| NULL                      | argv[argc]
+	+---------------------------+
+	| stack_addr[1]             | argv[1] 주소
+	+---------------------------+
+	| stack_addr[0]             | argv[0] 주소
+	+---------------------------+ ← rsi가 가리킴 (argv)
+	| NULL (가짜 반환 주소)     |
+	+---------------------------+ ← rsp
+	낮은 주소
+	*/
 	success = true;
 
 done:
@@ -618,7 +655,6 @@ done:
 	{
 		palloc_free_page(file_name_copy);
 	}
-	file_close (file);
 	return success;
 }
 
