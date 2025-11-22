@@ -51,6 +51,8 @@ process_create_initd (const char *file_name) {
 	char *fn_copy;
 	tid_t tid;
 
+	lock_init(&filesys_lock);
+
 	/* Make a copy of FILE_NAME.
 	 * Otherwise there's a race between the caller and load(). */
 	fn_copy = palloc_get_page (0);
@@ -59,7 +61,7 @@ process_create_initd (const char *file_name) {
 	strlcpy (fn_copy, file_name, PGSIZE);
 
 	char thread_name[64];
-	strlcpy(thread_name, file_name, PGSIZE);
+	strlcpy(thread_name, file_name, sizeof(thread_name));
 	char* save_ptr;
 	strtok_r(thread_name, " ", &save_ptr);
 
@@ -224,6 +226,7 @@ __do_fork (void *aux) {
 	current->fdt_table[0] = parent->fdt_table[0];
 	current->fdt_table[1] = parent->fdt_table[1];
 	
+	lock_acquire(&filesys_lock);
 	for (int i = 2; i < 128; i++){
 		struct file *parent_file = parent->fdt_table[i];
 		
@@ -236,6 +239,7 @@ __do_fork (void *aux) {
 			current->fdt_table[i] = NULL;
 		}
 	}
+	lock_release(&filesys_lock);
 	// 성공했으면 엄마한테 신호보내기
 	sema_up(&current->fork_sema);
 	
@@ -257,6 +261,8 @@ process_exec (void *f_name) {
 	char *file_name = f_name;
 	bool success;
 
+	// f_name 으로 file_obj 추출
+	//if(file_obj)
 	/* We cannot use the intr_frame in the thread structure.
 	 * This is because when current thread rescheduled,
 	 * it stores the execution information to the member. */
@@ -305,17 +311,17 @@ process_wait (tid_t child_tid UNUSED) {
 	 * XXX:       to add infinite loop here before
 	 * XXX:       implementing the process_wait. */
 	// 자식 찾아서 가져와
-	
 	struct thread *child = get_child_thread(child_tid);
+
 	if (child == NULL) return -1;
 	// 자식이 종료될 때까지 대기
 	sema_down(&child->wait_sema);
 	// 자식 종료상태 가져오기
 	int exit_status = child->exit_status;
+	// 자식이 이제 free를 해도 된다.
+	sema_up(&child->free_sema);
 	// 자식 리스트에서 제거하기
 	list_remove(&child->child_elem);
-	// 자식 죽어도 된다고 신호보내기
-	sema_up(&child->free_sema);
 
 	return exit_status;
 }
@@ -330,7 +336,19 @@ process_exit (void) {
 	 * TODO: We recommend you to implement process resource cleanup here. */
 	if (curr->pml4 != NULL){
 		printf ("%s: exit(%d)\n", curr->name, curr->exit_status);
+	}	
+	// if (curr->running_file != NULL) file_allow_write(curr->running_file);
+	
+	bool lock_held = lock_held_by_current_thread(&filesys_lock);
+    if (!lock_held) {
+        lock_acquire(&filesys_lock);
+    }
+	
+	if(curr->running_file!=NULL){
+		file_close(curr->running_file);
+		curr->running_file = NULL;
 	}
+
 	// 강제종료될 경우 정상적으로 닫히지 않은 잔존 파일들 닫아주기
 	if (curr->fdt_table != NULL){
 		for (int i = 2; i < 128; i++){
@@ -343,21 +361,23 @@ process_exit (void) {
 		curr->fdt_table = NULL;
 	}
 	
+	while (!list_empty(&curr->child_list)) {
+		struct list_elem *e = list_pop_front(&curr->child_list);
+		struct thread *child = list_entry(e, struct thread, child_elem);
+		sema_down(&child->free_sema);
+	}
+	
+	
 	process_cleanup ();
-
+	
+	lock_release(&filesys_lock);
 	// 부모에게 종료 상태 전달
 	sema_up(&curr->wait_sema);
 	
-	struct list_elem *e;
-
-	while (!list_empty(&curr->child_list)) {
-    struct list_elem *e = list_pop_front(&curr->child_list);
-    struct thread *child = list_entry(e, struct thread, child_elem);
-    sema_up(&child->free_sema);
-	}
-	
 	sema_down(&curr->free_sema);
+	
 }
+
 
 /* Free the current process's resources. */
 static void
@@ -479,6 +499,8 @@ load (const char *file_name, struct intr_frame *if_) {
 	int len;
 	// char *argv_addr// argv 배열의 시작 주소
 	int padding;
+	lock_acquire(&filesys_lock);
+
 	/* Allocate and activate page directory. */
 	t->pml4 = pml4_create ();
 	if (t->pml4 == NULL)
@@ -496,7 +518,7 @@ load (const char *file_name, struct intr_frame *if_) {
 	
 	// strtok_r -> 더 이상 분리할 단어가 없을때 NULL을 반환
 	for (token = strtok_r(file_name_copy, " ", &bookmark);
-		token != NULL;
+	token != NULL;
 		token = strtok_r(NULL, " ", &bookmark))
 	{
 		argv[argc++] = token;
@@ -510,10 +532,7 @@ load (const char *file_name, struct intr_frame *if_) {
 		printf ("load: %s: open failed\n", file_name);
 		goto done;
 	}
-
-	t->running_file = file;
-	file_deny_write(file);
-
+	
 	/* Read and verify executable header. */
 	if (file_read (file, &ehdr, sizeof ehdr) != sizeof ehdr
 			|| memcmp (ehdr.e_ident, "\177ELF\2\1\1", 7)
@@ -579,16 +598,17 @@ load (const char *file_name, struct intr_frame *if_) {
 		}
 	}
 
+	
 	/* Set up stack. */
 	if (!setup_stack (if_))
-		goto done;
-
+	goto done;
+	
 	/* Start address. */
 	if_->rip = ehdr.e_entry;
-
+	
 	/* TODO: Your code goes here.
-	 * TODO: Implement argument passing (see project2/argument_passing.html). */ // argument 구현하기 1빠따로 해야할 일
-
+	* TODO: Implement argument passing (see project2/argument_passing.html). */ // argument 구현하기 1빠따로 해야할 일
+	
 	// 복사본 사용 -> 포인터라 real filename이 변경된다.
 	for (int i = argc -1; i >= 0; i--)
 	{
@@ -597,17 +617,17 @@ load (const char *file_name, struct intr_frame *if_) {
 		memcpy((void*)if_->rsp, argv[i], len); // void*를 사용해도 되나?
 		stack_addr[i] = (char*) if_->rsp;
 	}
-
+	
 	int padding1 = (uintptr_t)if_->rsp % 8;
 	if (padding1 != 0){
 		if_->rsp -= padding1;
 		memset((void*)if_->rsp, 0, padding1); // NULL 
 	}
-
+	
 	// rsi rdi
 	// if_ 구조체에 넣어주기
 	// rsp 
-
+	
 	// argv[argc] = NULL;을 
 	if_->rsp -= sizeof(char *);
 	*((char**)if_->rsp) = NULL;
@@ -621,11 +641,11 @@ load (const char *file_name, struct intr_frame *if_) {
 	// 가짜 반환 주소 저장
 	if_->rsp -= sizeof(void*);
 	*((void**)if_->rsp) = NULL;
-
+	
 	// 새 사용자 프로세스를 위해 인터럽트 프레임을 업데이트
 	if_->R.rdi = argc;	// 첫 번째 인자: argc
 	if_->R.rsi = (uint64_t)if_->rsp + sizeof(void*); // argv[0]의 주소
-
+	
 	/*
 	높은 주소 (USER_STACK = 0x47480000)
 	+---------------------------+
@@ -647,20 +667,28 @@ load (const char *file_name, struct intr_frame *if_) {
 	+---------------------------+ ← rsp
 	낮은 주소
 	*/
-	success = true;
+success = true;
 
 done:
-	/* We arrive here whether the load is successful or not. */
+/* We arrive here whether the load is successful or not. */
 	if (file_name_copy != NULL)
 	{
 		palloc_free_page(file_name_copy);
 	}
+
+	if (success) {
+		t->running_file = file;
+		file_deny_write(file);
+	} else {
+		file_close(file);
+	}
+	lock_release(&filesys_lock);
 	return success;
 }
 
 
 /* Checks whether PHDR describes a valid, loadable segment in
- * FILE and returns true if so, false otherwise. */
+* FILE and returns true if so, false otherwise. */
 static bool
 validate_segment (const struct Phdr *phdr, struct file *file) {
 	/* p_offset and p_vaddr must have the same page offset. */

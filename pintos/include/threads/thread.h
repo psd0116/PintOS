@@ -19,6 +19,8 @@ enum thread_status {
 	THREAD_DYING        /* About to be destroyed. */
 };
 
+extern struct lock filesys_lock;
+
 /* Thread identifier type.
    You can redefine this to whatever type you like. */
 typedef int tid_t;
@@ -102,10 +104,12 @@ struct thread {
 	struct semaphore fork_sema;
 	// 자식 프로세스의 종료를 위한 세마포어
 	struct semaphore wait_sema;
-	// 자식 프로세스의 상태를 전부 읽을 때까지 기다리는 세마포어
+	// 부모가 wait할 때 자식이 free를 하지 않게 잠구는 세마포어
 	struct semaphore free_sema;
 	// 현재 실행 중인 파일
 	struct file *running_file;
+	// 엄마를 가리키는 포인터
+	struct thread *parent;
 	// 파일 디스크립터 테이블
 	struct file **fdt_table;
 	// 자식 프로세스의 상태 정수형으로 표현
@@ -120,7 +124,7 @@ struct thread {
 	struct list_elem donation_elem;
 	// 자식 관리를 위한 리스트
 	struct list child_list;
-	// 부모 자식리스트에 매달릴 연결 고리
+	// 부모 자식리스트에 매달린 연결 고리
 	struct list_elem child_elem;
 #ifdef USERPROG
 	/* Owned by userprog/process.c. */

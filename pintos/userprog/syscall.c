@@ -14,12 +14,22 @@
 
 void syscall_entry (void);
 void syscall_handler (struct intr_frame *);
-static struct lock filesys_lock;
+struct lock filesys_lock;
 
 static void check_address(const void *addr);
+static void check_string(const char *str);
 static void handler_exit(int status);
+static void handler_halt(void);
 static int handler_write(int fd, const void *buffer, unsigned size);
 static bool handler_create(const char *file, unsigned initial_size);
+static bool handler_remove(const char *file);
+static int handler_open(const char *file);
+static void handler_close(int fd);
+static int handler_read(int fd, void *buffer, unsigned size);
+static int handler_filesize(int fd);
+static tid_t handler_fork(const char *thread_name, struct intr_frame *f);
+static int handler_exec(const char *cmd_line);
+static void handler_seek(int fd, off_t position);
 /* System call.
  *
  * Previously system call services was handled by the interrupt handler
@@ -83,8 +93,9 @@ syscall_handler (struct intr_frame *f UNUSED) {
 		case SYS_CREATE:
 			f->R.rax = handler_create((const char*)f->R.rdi, (unsigned)f->R.rsi);
 			break;
-		// case SYS_REMOVE:
-		// 	break;
+		case SYS_REMOVE:
+			f->R.rax = handler_remove((const char *)f->R.rdi);
+			break;
 		case SYS_OPEN:
 			f->R.rax = handler_open((const char*)f->R.rdi);
 			break;
@@ -97,12 +108,14 @@ syscall_handler (struct intr_frame *f UNUSED) {
 		case SYS_WRITE:
 			f->R.rax = handler_write((int)f->R.rdi, (const void*)f->R.rsi, (unsigned)f->R.rdx);
 			break;
-		// case SYS_SEEK:
-		// 	break;
+		case SYS_SEEK:
+			handler_seek((int)f->R.rdi, (off_t)f->R.rsi);
+			break;
 		// case SYS_TELL:
+		// 	f->R.rax = handler_tell((unsigned)f->R.rdi);
 		// 	break;
 		case SYS_CLOSE:
-			f->R.rax = handler_close((int)f->R.rdi);
+			handler_close((int)f->R.rdi);
 			break;
 		default:
 			handler_exit(-1);
@@ -307,6 +320,7 @@ tid_t handler_fork(const char *thread_name, struct intr_frame *f){
 int handler_exec (const char *cmd_line) {
 	check_address(cmd_line);
 	if (cmd_line == NULL) handler_exit(-1);
+	
 
     struct thread *cur = thread_current();
     char* fn_copy = palloc_get_page(PAL_ZERO);
@@ -320,6 +334,29 @@ int handler_exec (const char *cmd_line) {
     
     // 성공 시 리턴 없음
     return -1;
+}
+
+void handler_seek (int fd, off_t position){
+	if (fd < 2 || fd >= 128) return;
+	struct thread *cur = thread_current();
+	struct file *file = cur->fdt_table[fd];
+
+	if (file == NULL) return;
+
+	lock_acquire(&filesys_lock);
+	file_seek(file, position);
+	lock_release(&filesys_lock);
+}
+
+bool handler_remove (const char* file){
+    check_string(file);
+
+    if (file[0] == '\0') return false;
+    
+	if (filesys_remove(file)){
+		return true;
+	}
+	return false;
 }
 // halt랑 exit
 // enum {
