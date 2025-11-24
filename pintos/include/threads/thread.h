@@ -167,7 +167,7 @@ void thread_yield (void);
 int thread_get_priority (void);
 void thread_set_priority (int);
 
-int thread_get_nice (void);
+int thread_get_nice (void);햐
 void thread_set_nice (int);
 int thread_get_recent_cpu (void);
 int thread_get_load_avg (void);

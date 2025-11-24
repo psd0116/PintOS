@@ -118,7 +118,14 @@ process_fork (const char *name, struct intr_frame *if_ UNUSED) {
 	// 자식이 do_fork를 할 때까지 멈춘다.
 	sema_down(&child->fork_sema);
 	
-	if (child->exit_status == -1) return TID_ERROR;
+	if (child->exit_status == -1) {
+        // 자식은 현재 process_exit의 sema_down(&free_sema)에 걸려있음.
+        // 부모가 여기서 풀어주지 않으면 자식 스레드 페이지(4KB)가 영원히 해제되지 않음.
+        sema_up(&child->free_sema); 
+        // 자식 리스트에서도 제거
+        list_remove(&child->child_elem);
+        return TID_ERROR;
+    }
 
 	// 부모는 tid를 내놓고 기다린다.
 	return tid;
@@ -281,6 +288,8 @@ process_exec (void *f_name) {
 	// 바이너리를 로드
 	success = load (file_name, &_if);
 
+	palloc_free_page(file_name);
+
 	/* If load failed, quit. */
 	// 로드에 실패하면 종료
 	if (!success){
@@ -364,7 +373,8 @@ process_exit (void) {
 	while (!list_empty(&curr->child_list)) {
 		struct list_elem *e = list_pop_front(&curr->child_list);
 		struct thread *child = list_entry(e, struct thread, child_elem);
-		sema_down(&child->free_sema);
+		child->parent = NULL;
+		sema_up(&child->free_sema);
 	}
 	
 	
