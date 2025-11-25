@@ -233,14 +233,19 @@ __do_fork (void *aux) {
 
 	// 부모꺼 fdt 복사 ㄱㄱ
 	current->fdt_table[0] = parent->fdt_table[0];
-	current->fdt_table[1] = parent->fdt_table[1];
+	current->fdt_table[1] = parent->fdt_table[1];  // fd 1도 그대로 복사 (stdout 또는 stdout marker)
 	
     for (int i = 2; i < 512; i++){
         struct file *parent_file = parent->fdt_table[i];
         
         if(parent_file != NULL){
-            struct file *child_file = file_duplicate(parent_file);
-            current->fdt_table[i] = child_file;
+            // stdout marker 처리
+            if (parent_file == (struct file *)1) {
+                current->fdt_table[i] = parent_file;  // marker 그대로 복사
+            } else {
+                struct file *child_file = file_duplicate(parent_file);
+                current->fdt_table[i] = child_file;
+            }
         }
     }
 	lock_release(&filesys_lock);
@@ -376,9 +381,31 @@ process_exit (void) {
 
 	// 강제종료될 경우 정상적으로 닫히지 않은 잔존 파일들 닫아주기
 	if (curr->fdt_table != NULL){
+		// 이미 닫힌 파일들을 추적하기 위한 배열
+		bool closed_files[512];
+		memset(closed_files, false, sizeof(closed_files));
+		
 		for (int i = 2; i < 512; i++){
-			if (curr->fdt_table[i] != NULL){
-				file_close(curr->fdt_table[i]);
+			if (curr->fdt_table[i] != NULL && !closed_files[i]){
+				struct file *file = curr->fdt_table[i];
+				
+				// stdout marker 처리
+				if (file == (struct file *)1) {
+					closed_files[i] = true;
+					curr->fdt_table[i] = NULL;
+					continue;
+				}
+				
+				// 같은 파일을 가리키는 모든 fd를 닫힘으로 표시
+				for (int j = i; j < 512; j++){
+					if (curr->fdt_table[j] == file){
+						closed_files[j] = true;
+					}
+				}
+				// 파일을 한 번만 닫기
+				file_close(file);
+				curr->fdt_table[i] = NULL;
+			} else if (curr->fdt_table[i] != NULL){
 				curr->fdt_table[i] = NULL;
 			}
 		}
@@ -396,7 +423,9 @@ process_exit (void) {
 	
 	process_cleanup ();
 	
-	lock_release(&filesys_lock);
+	if (!lock_held) {
+		lock_release(&filesys_lock);
+	}
 	// 부모에게 종료 상태 전달
 	sema_up(&curr->wait_sema);
 	
