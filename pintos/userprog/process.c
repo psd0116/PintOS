@@ -225,27 +225,24 @@ __do_fork (void *aux) {
 	// 자식도 페이지 테이블 할당
 	process_init ();
 	
-	current->fdt_table = palloc_get_page(PAL_ZERO);
+	// current->fdt_table = palloc_get_page(PAL_ZERO);
 	if (current->fdt_table == NULL){
 		goto error;
 	}
+	lock_acquire(&filesys_lock);
+
 	// 부모꺼 fdt 복사 ㄱㄱ
 	current->fdt_table[0] = parent->fdt_table[0];
 	current->fdt_table[1] = parent->fdt_table[1];
 	
-	lock_acquire(&filesys_lock);
-	for (int i = 2; i < 128; i++){
-		struct file *parent_file = parent->fdt_table[i];
-		
-		if(parent_file != NULL){
-			// file_duplicate를 사용하여 새로운 객체를 생성하여 할당
-			// fd가 0과 1이 NULL이어도 NULL이 아닐때만 복사하므로 0,1은 걱정 x
-			struct file *child_file = file_duplicate(parent_file);
-			current->fdt_table[i] = child_file;
-		} else {
-			current->fdt_table[i] = NULL;
-		}
-	}
+    for (int i = 2; i < 512; i++){
+        struct file *parent_file = parent->fdt_table[i];
+        
+        if(parent_file != NULL){
+            struct file *child_file = file_duplicate(parent_file);
+            current->fdt_table[i] = child_file;
+        }
+    }
 	lock_release(&filesys_lock);
 	// 성공했으면 엄마한테 신호보내기
 	sema_up(&current->fork_sema);
@@ -255,6 +252,25 @@ __do_fork (void *aux) {
 		do_iret (&if_);
 error:
 	// 실패해도 엄마는 깨워야한다.
+	if (current->fdt_table != NULL){
+		lock_acquire(&filesys_lock);
+		for (int i = 2; i < 512; i++){
+			if (current->fdt_table[i] != NULL){
+				file_close(current->fdt_table[i]);
+				current->fdt_table[i] = NULL;
+			}
+		}
+		lock_release(&filesys_lock);
+		palloc_free_page(current->fdt_table);
+		current->fdt_table = NULL;
+	}
+
+	if (current->pml4 != NULL){
+		pml4_activate(NULL);
+	}
+
+	process_cleanup();
+
 	current->exit_status = -1;
 	sema_up(&current->fork_sema);
 	thread_exit ();
@@ -360,7 +376,7 @@ process_exit (void) {
 
 	// 강제종료될 경우 정상적으로 닫히지 않은 잔존 파일들 닫아주기
 	if (curr->fdt_table != NULL){
-		for (int i = 2; i < 128; i++){
+		for (int i = 2; i < 512; i++){
 			if (curr->fdt_table[i] != NULL){
 				file_close(curr->fdt_table[i]);
 				curr->fdt_table[i] = NULL;
@@ -408,7 +424,7 @@ process_cleanup (void) {
 		 * so that a timer interrupt can't switch back to the
 		 * process page directory.  We must activate the base page
 		 * directory before destroying the process's page
-		 * directory, or our active page directory will be one
+		 * directory, or our active page directory will be one1
 		 * that's been freed (and cleared). */
 		curr->pml4 = NULL;
 		pml4_activate (NULL);

@@ -24,7 +24,7 @@ extern struct lock filesys_lock;
 /* Thread identifier type.
    You can redefine this to whatever type you like. */
 typedef int tid_t;
-#define TID_ERROR ((tid_t) -1)          /* Error value for tid_t. */
+#define 	TID_ERROR ((tid_t) -1)          /* Error value for tid_t. */
 
 /* Thread priorities. */
 #define PRI_MIN 0                       /* Lowest priority. */
@@ -167,7 +167,7 @@ void thread_yield (void);
 int thread_get_priority (void);
 void thread_set_priority (int);
 
-int thread_get_nice (void);햐
+int thread_get_nice (void);
 void thread_set_nice (int);
 int thread_get_recent_cpu (void);
 int thread_get_load_avg (void);

@@ -29,7 +29,9 @@ static int handler_read(int fd, void *buffer, unsigned size);
 static int handler_filesize(int fd);
 static tid_t handler_fork(const char *thread_name, struct intr_frame *f);
 static int handler_exec(const char *cmd_line);
-static void handler_seek(int fd, off_t position);
+int handler_dup2(int oldfd, int newfd);
+void handler_seek(int fd, off_t position);
+unsigned handler_tell(int fd);
 /* System call.
  *
  * Previously system call services was handled by the interrupt handler
@@ -111,11 +113,14 @@ syscall_handler (struct intr_frame *f UNUSED) {
 		case SYS_SEEK:
 			handler_seek((int)f->R.rdi, (off_t)f->R.rsi);
 			break;
-		// case SYS_TELL:
-		// 	f->R.rax = handler_tell((unsigned)f->R.rdi);
-		// 	break;
+		case SYS_TELL:
+			f->R.rax = handler_tell((int)f->R.rdi);
+			break;
 		case SYS_CLOSE:
 			handler_close((int)f->R.rdi);
+			break;
+		case SYS_DUP2:
+			f->R.rax = handler_dup2((int) f->R.rdi, (int) f->R.rsi);
 			break;
 		default:
 			handler_exit(-1);
@@ -146,7 +151,7 @@ int give_fdt(struct file *file) {
     struct thread *cur = thread_current();
     struct file **fdt1 = cur->fdt_table;
 
-    for (int fd = 2; fd < 128; fd++) {
+    for (int fd = 2; fd < 512; fd++) {
         // 현재 검사하는 슬롯(fdt[fd])이 비어있는지(NULL) 확인
         if (fdt1[fd] == NULL) {
             fdt1[fd] = file;
@@ -186,7 +191,7 @@ int handler_write(int fd, const void *buffer, unsigned size){
         struct thread *cur = thread_current();
         struct file **fdt = cur->fdt_table;
 
-        if (fd < 2 || fd >= 128 || fdt[fd] == NULL) {
+        if (fd < 2 || fd >= 512 || fdt[fd] == NULL) {
             return -1;
         }
 
@@ -240,7 +245,7 @@ void handler_close(int fd){
     struct thread *cur = thread_current();
     struct file **fdt = cur->fdt_table;
 
-    if(fd < 2 || fd >= 128 || fdt[fd] == NULL){
+    if(fd <= 0 || fd >= 512 || fdt[fd] == NULL){
         return;
     }
 
@@ -279,7 +284,7 @@ int handler_read(int fd, void* buffer, unsigned size){
 	struct thread *cur = thread_current();
 	struct file **fdt = cur->fdt_table;
 
-    if (fd < 2 || fd >= 128 || fdt[fd] == NULL) {
+    if (fd < 2 || fd >= 512 || fdt[fd] == NULL) {
         return -1;
     }
 
@@ -296,11 +301,11 @@ int handler_filesize(int fd){
 	struct thread *cur = thread_current();
 	struct file **fdt = cur->fdt_table;
 
-	if (fd < 2 || fd >= 128 || fdt[fd] == NULL){
+	if (fd < 2 || fd >= 512 || fdt[fd] == NULL){
 		return -1;
 	}
 
-	struct file *cur_file = fdt[fd];
+	struct file *cur_file = fdt[fd];	
 
 	lock_acquire(&filesys_lock);
 	int size = file_length(cur_file);
@@ -337,7 +342,7 @@ int handler_exec (const char *cmd_line) {
 }
 
 void handler_seek (int fd, off_t position){
-	if (fd < 2 || fd >= 128) return;
+	if (fd < 2 || fd >= 512) return;
 	struct thread *cur = thread_current();
 	struct file *file = cur->fdt_table[fd];
 
@@ -357,6 +362,43 @@ bool handler_remove (const char* file){
 		return true;
 	}
 	return false;
+}
+
+int handler_dup2(int oldfd, int newfd){
+	if (oldfd < 0 || newfd < 0 || oldfd >= 512 || newfd >= 512) return -1;
+
+	struct thread *cur = thread_current();
+	struct file *file = cur->fdt_table[oldfd];
+
+	if (file == NULL) return -1;
+
+	if (oldfd == newfd) return newfd;
+
+	if (cur->fdt_table[newfd] != NULL){
+		lock_acquire(&filesys_lock);
+		file_close(cur->fdt_table[newfd]);
+		lock_release(&filesys_lock);
+		cur->fdt_table[newfd] = NULL;
+	}
+	
+	cur->fdt_table[newfd] = file;
+	
+	return newfd;
+}
+
+unsigned handler_tell(int fd){
+	if (fd < 2 || fd >= 512) return -1;
+
+	struct thread *cur = thread_current();
+	struct file *file = cur->fdt_table[fd];
+
+	if (file == NULL) return -1;
+	
+	lock_acquire(&filesys_lock);
+	off_t pos = file_tell(file);
+	lock_release(&filesys_lock);
+
+	return pos;
 }
 // halt랑 exit
 // enum {
